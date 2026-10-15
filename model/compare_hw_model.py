@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tm_model import train
 
 d = json.load(open(sys.argv[1]))
-res, _ = train(d["S"], d["C"], d["n_train"], d["target"], d["seeds"], d["top_seed"], epochs=d["max_updates"])
+res = train(d["S"], d["C"], d["n_train"], d["target"], d["seeds"], epochs=d["max_updates"])
 n = d["n_train"]
 hw, hw_hits = {}, None
 for l in open(sys.argv[2]):

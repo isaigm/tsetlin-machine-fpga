@@ -16,29 +16,24 @@ architecture Behavioral of tsetlin_machine is
 
     constant T: integer := 2;
 
-    signal en_update: std_logic_vector(N_RULES - 1 downto 0) := (others => '0');
-    signal en_reject: std_logic_vector(N_RULES - 1 downto 0) := (others => '0');
-    signal en_erase: std_logic_vector(N_RULES - 1 downto 0) := (others => '0');
-    signal done: std_logic_vector(N_RULES - 1 downto 0);
-    signal eval: std_logic_vector(N_RULES - 1 downto 0);
-    signal eval_r: std_logic_vector(N_RULES - 1 downto 0);
-    signal sample_idx: integer range 0 to N_SAMPLES - 1 := 0;
-    signal fire_ones: integer range 0 to N_RULES;
-    signal miss_ones: integer range 0 to N_RULES;
-    signal rule_idx: integer range 0 to N_RULES - 1 := 0;
-    signal class_r: std_logic;
-    signal p: unsigned(15 downto 0);
-    signal p_rule: unsigned(15 downto 0);
-    signal en: std_logic;
-    signal rand: std_logic_vector(15 downto 0);
-    signal curr_status: status_t := WAIT_FOR_EVAL;
+    signal en_update:      std_logic_vector(N_RULES - 1 downto 0) := (others => '0');
+    signal ready:          std_logic_vector(N_RULES - 1 downto 0);
+    signal eval:           std_logic_vector(N_RULES - 1 downto 0);
+    signal eval_r:         std_logic_vector(N_RULES - 1 downto 0);
+    signal sample_idx:     integer range 0 to N_SAMPLES - 1 := 0;
+    signal fire_ones:      integer range 0 to N_RULES;
+    signal miss_ones:      integer range 0 to N_RULES;
+    signal class_r:        std_logic;
+    signal p:              unsigned(15 downto 0);
+    signal p_r:            unsigned(15 downto 0) := (others => '0');   -- registered p, sent to the rules
+    signal curr_status:    status_t := WAIT_FOR_SAMPLE_R;
 
-    signal epoch: integer range 0 to MAX_UPDATES - 1 := 0;
-    signal votes0: integer range 0 to N_RULES;
-    signal votes1: integer range 0 to N_RULES;
-    signal pred: std_logic;
-    signal pred_ok: std_logic;
-    signal hits: integer range 0 to N_TEST := 0;          -- correct predictions on the test set
+    signal epoch:          integer range 0 to MAX_UPDATES - 1 := 0;
+    signal votes0:         integer range 0 to N_RULES;
+    signal votes1:         integer range 0 to N_RULES;
+    signal pred:           std_logic;
+    signal pred_ok:        std_logic;
+    signal hits:           integer range 0 to N_TEST := 0;   -- correct predictions on the test set
     signal train_finished: std_logic := '0';
 
     -- p = (T - v) * 65535 / (2T) for every possible v, computed at elaboration (no multiplier, no DSP)
@@ -54,87 +49,49 @@ architecture Behavioral of tsetlin_machine is
     constant P_TABLE: p_table_t := make_p_table;
 
 begin
-    LED(7 downto 0)   <= std_logic_vector(to_unsigned(hits, 8));
-    LED(14 downto 8)  <= (others => '0');
-    LED(15)           <= '1' when curr_status = FINISHED else '0';
-
-    en <= '1' when curr_status = UPDATE_RULES else '0';
-
-    p_rule <= p when TARGET_CLASSES(rule_idx) = class_r
-              else to_unsigned(32767, 16);
+    LED(7 downto 0)  <= std_logic_vector(to_unsigned(hits, 8));
+    LED(14 downto 8) <= (others => '0');
+    LED(15)          <= '1' when curr_status = FINISHED else '0';
 
     pred    <= '0' when votes0 > votes1 else '1';
     pred_ok <= '1' when pred = class_r else '0';
 
     process(clk)
-        variable must_wait: std_logic;
     begin
         if rising_edge(clk) then
             if rst = '1' then
-                sample_idx      <= 0;
-                rule_idx        <= 0;
-                epoch           <= 0;
-                hits            <= 0;
-                train_finished  <= '0';
-                class_r         <= CLASSES(0);
-                eval_r          <= eval;
-                curr_status     <= WAIT_FOR_SAMPLE_R;
+                sample_idx     <= 0;
+                epoch          <= 0;
+                hits           <= 0;
+                train_finished <= '0';
+                class_r        <= CLASSES(0);
+                eval_r         <= eval;
+                curr_status    <= WAIT_FOR_SAMPLE_R;
             else
-                must_wait := '0';
                 en_update <= (others => '0');
-                en_erase  <= (others => '0');
-                en_reject <= (others => '0');
+                p_r       <= p;   -- valid one cycle after UPDATE_RULES, used by the rules in SELECT_NEXT_OP
 
                 case curr_status is
 
                     when UPDATE_RULES =>
-                        if unsigned(rand) <= p_rule then
-                            if TARGET_CLASSES(rule_idx) = class_r then
-                                if eval_r(rule_idx) = '1' then
-                                    en_update(rule_idx) <= '1';
-                                    curr_status <= WAIT_FOR_DONE;
-                                    must_wait := '1';
-                                else
-                                    en_erase(rule_idx) <= '1';
-                                    curr_status <= WAIT_FOR_DONE;
-                                    must_wait := '1';
-                                end if;
-                            else
-                                if eval_r(rule_idx) = '1' then
-                                    en_reject(rule_idx) <= '1';
-                                    curr_status <= WAIT_FOR_DONE;
-                                    must_wait := '1';
-                                end if;
-                            end if;
-                        end if;
-
-                        if (not must_wait) = '1' then
-                            curr_status <= UPDATE_IDX;
-                        end if;
+                        en_update   <= (others => '1');   -- all rules at once
+                        curr_status <= WAIT_FOR_DONE;
 
                     when UPDATE_IDX =>
-                        if rule_idx = N_RULES - 1 then
-                            if sample_idx = N_TRAIN - 1 then
-                                sample_idx <= 0;
-                            else
-                                sample_idx <= sample_idx + 1;
-                            end if;
-                            rule_idx <= 0;
-                        else
-                            rule_idx <= rule_idx + 1;
-                        end if;
-
-                        curr_status <= WAIT_FOR_SAMPLE_R;
-
-                        -- end of epoch: last rule of the last training sample
-                        if rule_idx = N_RULES - 1 and sample_idx = N_TRAIN - 1 then
+                        -- each pass updates all rules with one sample
+                        if sample_idx = N_TRAIN - 1 then
+                            sample_idx <= 0;
                             if epoch = MAX_UPDATES - 1 then
                                 train_finished <= '1';
                                 sample_idx     <= N_TRAIN;   -- first test sample
                             else
                                 epoch <= epoch + 1;
                             end if;
+                        else
+                            sample_idx <= sample_idx + 1;
                         end if;
+
+                        curr_status <= WAIT_FOR_SAMPLE_R;
 
                     when WAIT_FOR_SAMPLE_R =>
                         -- the rules capture the new sample in sample_r, and the top captures its class in class_r
@@ -151,7 +108,7 @@ begin
                         end if;
 
                     when WAIT_FOR_DONE =>
-                        if done(rule_idx) = '1' then
+                        if ready = (ready'range => '1') then
                             curr_status <= UPDATE_IDX;
                         end if;
 
@@ -163,7 +120,7 @@ begin
                         if sample_idx = N_SAMPLES - 1 then
                             curr_status <= FINISHED;
                         else
-                            sample_idx <= sample_idx + 1;
+                            sample_idx  <= sample_idx + 1;
                             curr_status <= WAIT_FOR_SAMPLE_R;
                         end if;
 
@@ -178,31 +135,21 @@ begin
         end if;
     end process;
 
-    lfsr16_inst: entity work.lfsr16
-    generic map (
-        SEED => TOP_SEED
-    )
-    port map (
-        clk  => clk,
-        rst  => rst,
-        en   => en,
-        rand => rand
-    );
-
     gen_rules: for i in 0 to N_RULES - 1 generate
         rule_inst: entity work.rule
         generic map (
+            TARGET_CLASS => TARGET_CLASSES(i),
             SEED         => SEEDS(i),
             N_ATTRIBUTES => N_ATTRIBUTES
         )
         port map (
             clk       => clk,
             rst       => rst,
+            class_r   => class_r,
+            p         => std_logic_vector(p_r),
             en_update => en_update(i),
-            en_erase  => en_erase(i),
-            en_reject => en_reject(i),
             sample    => SAMPLES(sample_idx),
-            done      => done(i),
+            ready     => ready(i),
             eval      => eval(i)
         );
     end generate;
